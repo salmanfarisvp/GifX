@@ -257,7 +257,7 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <header className="pt-12 pb-6 text-center">
-        <h1 className="text-5xl font-bold bg-gradient-to-r from-violet-600 to-indigo-600 bg-clip-text text-transparent">
+        <h1 className="text-5xl font-bold bg-gradient-to-r from-purple-500 to-purple-700 bg-clip-text text-transparent">
           GifX
         </h1>
         <p className="mt-2 text-slate-500 text-lg">

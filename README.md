@@ -1,16 +1,45 @@
 # GifX
 
-GifX is a command-line tool for converting video files into high-quality GIFs. Built with the assistance of ChatGPT, this tool simplifies the process of creating GIFs by providing customizable options for frame rate, resolution, and quality.
+GifX converts videos into high-quality GIFs. Use it as a **web app** (runs entirely in the browser — no installs needed) or as a **command-line tool**.
+
+<a href="https://www.buymeacoffee.com/salmanfarisvp" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-violet.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
 
 <hr>
 
 ## Features
-* Converts videos to GIFs in a few simple steps.
-* Supports adjustable frame rates (fps) and resolutions (scale).
-* Generates optimized palettes for high-quality color reproduction.
-* Provides flexibility for creating GIFs for different use cases.
+* **Web app** — drag-and-drop video conversion in the browser, no dependencies required
+* **Quality presets** — Ultra Small, Small, Medium, High for one-click simplicity
+* **Advanced controls** — fine-tune FPS, width, and compression (palette color reduction)
+* **Video metadata** — see duration, resolution, and file size before converting
+* **100% private** — all processing happens locally, nothing is uploaded
+* **CLI tool** — shell script for batch/automated workflows
+* Optimized palette-based GIF creation for superior color reproduction
 
-## Installation
+## Web App (Vercel)
+
+GifX is available as a web app that runs entirely in the browser — no ffmpeg installation required.
+
+The web version uses [ffmpeg.wasm](https://ffmpegwasm.netlify.app/) (FFmpeg compiled to WebAssembly) so all video processing happens client-side. Nothing is uploaded to any server.
+
+### Deploy to Vercel
+
+1. Push this repo to GitHub
+2. Go to [vercel.com/new](https://vercel.com/new) and import the repository
+3. Vercel will auto-detect Next.js — click **Deploy**
+
+### Run locally
+
+```bash
+npm install
+npm run dev
+```
+
+Then open [http://localhost:3000](http://localhost:3000).
+
+<hr>
+
+## CLI Tool
+
 ### Prerequisites
 * Install ffmpeg:
 ```bash
@@ -116,52 +145,23 @@ Yes, you can run the script on Windows through a Unix-like environment like Git 
 
 <hr>
 
-## Web App (Vercel)
-
-GifX is also available as a web app that runs entirely in the browser — no ffmpeg installation required.
-
-### How it works
-
-The web version uses [ffmpeg.wasm](https://ffmpegwasm.netlify.app/) (FFmpeg compiled to WebAssembly) so all video processing happens client-side. Nothing is uploaded to any server.
-
-### Deploy to Vercel
-
-1. Push this repo to GitHub
-2. Go to [vercel.com/new](https://vercel.com/new) and import the repository
-3. Vercel will auto-detect Next.js — click **Deploy**
-
-### Run locally
-
-```bash
-npm install
-npm run dev
-```
-
-Then open [http://localhost:3000](http://localhost:3000).
-
-<hr>
-
 ## Changelog
 ### Version 2.0
-* Web app version powered by ffmpeg.wasm
-* Drag-and-drop video upload with in-browser conversion
-* No system dependencies required for the web version
+* Web app powered by ffmpeg.wasm — browser-based conversion with zero dependencies
+* Quality presets (Ultra Small, Small, Medium, High) for one-click usage
+* Advanced controls for FPS, width, and compression
+* Video metadata display (duration, resolution, file size) before conversion
+* Buy Me a Coffee support link
 
 ### Version 1.0
-* Initial release.
-* Support for customizable `fps` and `scale`.
+* Initial release
+* CLI tool with customizable FPS and scale
 * High-quality palette-based GIF creation
 
 <hr>
 
 ## License
 GifX is open-source and licensed under the MIT License. Feel free to use, modify, and distribute it.
-
-<hr>
-
-## Acknowledgment
-
-This tool was developed with the support of ChatGPT, an AI assistant by OpenAI. ChatGPT played a key role in designing and optimizing the tool for ease of use and performance.
 
 <hr>
 
