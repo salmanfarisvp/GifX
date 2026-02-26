@@ -113,6 +113,8 @@ export default function Home() {
   const [videoHeight, setVideoHeight] = useState(0);
   const [gifURL, setGifURL] = useState("");
   const [gifSize, setGifSize] = useState(0);
+  const [webpURL, setWebpURL] = useState("");
+  const [webpSize, setWebpSize] = useState(0);
 
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
@@ -173,10 +175,13 @@ export default function Home() {
       }
       if (videoURL) URL.revokeObjectURL(videoURL);
       if (gifURL) URL.revokeObjectURL(gifURL);
+      if (webpURL) URL.revokeObjectURL(webpURL);
       setVideo(file);
       setVideoURL(URL.createObjectURL(file));
       setGifURL("");
       setGifSize(0);
+      setWebpURL("");
+      setWebpSize(0);
       setError("");
       setStatus("ready");
     },
@@ -391,19 +396,43 @@ export default function Home() {
         "output.gif",
       ]);
 
+      setStep("Creating WebP…");
+      setProgress(0);
+      await ffmpeg.exec([
+        ...trimArgs,
+        "-i",
+        "input",
+        "-vf",
+        `fps=${fps},scale=${scale}:-1:flags=lanczos`,
+        "-vcodec", "libwebp",
+        "-lossless", "0",
+        "-q:v", "70",
+        "-loop", "0",
+        "-an",
+        "-y",
+        "output.webp",
+      ]);
+
       setStep("Finalizing…");
-      const data = (await ffmpeg.readFile("output.gif")) as Uint8Array;
-      const blob = new Blob([new Uint8Array(data)], { type: "image/gif" });
+      const gifData = (await ffmpeg.readFile("output.gif")) as Uint8Array;
+      const gifBlob = new Blob([new Uint8Array(gifData)], { type: "image/gif" });
+
+      const webpData = (await ffmpeg.readFile("output.webp")) as Uint8Array;
+      const webpBlob = new Blob([new Uint8Array(webpData)], { type: "image/webp" });
 
       if (gifURL) URL.revokeObjectURL(gifURL);
-      setGifURL(URL.createObjectURL(blob));
-      setGifSize(data.length);
+      if (webpURL) URL.revokeObjectURL(webpURL);
+      setGifURL(URL.createObjectURL(gifBlob));
+      setGifSize(gifData.length);
+      setWebpURL(URL.createObjectURL(webpBlob));
+      setWebpSize(webpData.length);
       setStatus("done");
       setStep("");
 
       await ffmpeg.deleteFile("input");
       await ffmpeg.deleteFile("palette.png");
       await ffmpeg.deleteFile("output.gif");
+      await ffmpeg.deleteFile("output.webp");
     } catch (err) {
       console.error("Conversion failed:", err);
       setError(
@@ -416,6 +445,7 @@ export default function Home() {
   const reset = () => {
     if (videoURL) URL.revokeObjectURL(videoURL);
     if (gifURL) URL.revokeObjectURL(gifURL);
+    if (webpURL) URL.revokeObjectURL(webpURL);
     setVideo(null);
     setVideoURL("");
     setVideoDuration(0);
@@ -426,6 +456,8 @@ export default function Home() {
     setThumbnails([]);
     setGifURL("");
     setGifSize(0);
+    setWebpURL("");
+    setWebpSize(0);
     setProgress(0);
     setStep("");
     setError("");
@@ -819,7 +851,7 @@ export default function Home() {
                 className="mt-6 w-full py-3 px-6 rounded-xl font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-lg shadow-violet-200"
               >
                 {status === "ready"
-                  ? "Convert to GIF"
+                  ? "Convert to GIF & WebP"
                   : status === "loading"
                     ? "Loading Engine…"
                     : "Converting…"}
@@ -852,32 +884,69 @@ export default function Home() {
           {/* ── Result ── */}
           {status === "done" && gifURL && (
             <div className="p-6">
+              {/* Preview (show GIF by default) */}
               <div className="rounded-xl overflow-hidden bg-slate-50 border border-slate-100">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={gifURL} alt="Converted GIF" className="w-full" />
               </div>
 
               <p className="mt-3 text-sm text-slate-500">
-                GIF &middot; {formatSize(gifSize)} &middot; {fps}&nbsp;fps &middot;{" "}
-                {scale}px wide
+                {fps}&nbsp;fps &middot; {scale}px wide
                 {maxColors < 256 && <> &middot; {maxColors} colors</>}
               </p>
 
-              <div className="mt-6 flex gap-3">
-                <a
-                  href={gifURL}
-                  download={video?.name?.replace(/\.[^.]+$/, ".gif") || "output.gif"}
-                  className="flex-1 py-3 px-6 rounded-xl font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 transition-all duration-200 shadow-lg shadow-violet-200 text-center"
-                >
-                  Download GIF
-                </a>
-                <button
-                  onClick={reset}
-                  className="py-3 px-6 rounded-xl font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
-                >
-                  New
-                </button>
+              {/* Format cards */}
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                {/* GIF card */}
+                <div className="rounded-xl border border-slate-200 p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-semibold text-slate-700">GIF</span>
+                    <span className="text-sm font-mono text-slate-500">{formatSize(gifSize)}</span>
+                  </div>
+                  <a
+                    href={gifURL}
+                    download={video?.name?.replace(/\.[^.]+$/, ".gif") || "output.gif"}
+                    className="block w-full py-2 px-4 rounded-lg font-semibold text-sm text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 transition-all duration-200 shadow-md shadow-violet-200 text-center"
+                  >
+                    Download GIF
+                  </a>
+                </div>
+
+                {/* WebP card */}
+                <div className="rounded-xl border border-slate-200 p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-semibold text-slate-700">WebP</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-mono text-slate-500">{formatSize(webpSize)}</span>
+                      {webpSize > 0 && gifSize > 0 && webpSize < gifSize && (
+                        <span className="text-[10px] font-semibold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-full">
+                          {Math.round((1 - webpSize / gifSize) * 100)}% smaller
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {webpURL ? (
+                    <a
+                      href={webpURL}
+                      download={video?.name?.replace(/\.[^.]+$/, ".webp") || "output.webp"}
+                      className="block w-full py-2 px-4 rounded-lg font-semibold text-sm text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 transition-all duration-200 shadow-md shadow-emerald-200 text-center"
+                    >
+                      Download WebP
+                    </a>
+                  ) : (
+                    <div className="py-2 px-4 rounded-lg text-sm text-slate-400 bg-slate-50 text-center">
+                      Not available
+                    </div>
+                  )}
+                </div>
               </div>
+
+              <button
+                onClick={reset}
+                className="mt-4 w-full py-3 px-6 rounded-xl font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
+              >
+                Convert Another
+              </button>
             </div>
           )}
 
