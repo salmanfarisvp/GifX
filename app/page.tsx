@@ -89,6 +89,12 @@ function formatDuration(sec: number) {
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
+function formatTimestamp(sec: number) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${s.toFixed(1).padStart(4, "0")}`;
+}
+
 function colorsFromCompression(pct: number) {
   return Math.round(Math.pow(2, 8 - (pct / 100) * 4));
 }
@@ -108,6 +114,9 @@ export default function Home() {
   const [gifURL, setGifURL] = useState("");
   const [gifSize, setGifSize] = useState(0);
 
+  const [trimStart, setTrimStart] = useState(0);
+  const [trimEnd, setTrimEnd] = useState(0);
+
   const [quality, setQuality] = useState<Quality>("medium");
   const [fps, setFps] = useState(15);
   const [scale, setScale] = useState(480);
@@ -123,6 +132,10 @@ export default function Home() {
   const ffmpegRef = useRef<FFmpeg | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoElRef = useRef<HTMLVideoElement>(null);
+
+  const [thumbnails, setThumbnails] = useState<string[]>([]);
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef<"start" | "end" | null>(null);
 
   const applyPreset = useCallback((q: Exclude<Quality, "custom">) => {
     const p = QUALITY_PRESETS[q];
@@ -177,10 +190,137 @@ export default function Home() {
       setVideoDuration(el.duration);
       setVideoWidth(el.videoWidth);
       setVideoHeight(el.videoHeight);
+      setTrimStart(0);
+      setTrimEnd(el.duration);
     };
     el.addEventListener("loadedmetadata", onMeta);
     return () => el.removeEventListener("loadedmetadata", onMeta);
   }, [videoURL]);
+
+  const trimStartRef = useRef(trimStart);
+  const trimEndRef = useRef(trimEnd);
+  trimStartRef.current = trimStart;
+  trimEndRef.current = trimEnd;
+
+  useEffect(() => {
+    const el = videoElRef.current;
+    if (!el || !videoURL || videoDuration <= 0) return;
+
+    const onPlay = () => {
+      const ts = trimStartRef.current;
+      const te = trimEndRef.current;
+      if (el.currentTime < ts - 0.05 || el.currentTime >= te - 0.05) {
+        el.currentTime = ts;
+      }
+    };
+
+    const onTimeUpdate = () => {
+      const te = trimEndRef.current;
+      if (!el.paused && el.currentTime >= te) {
+        el.pause();
+        el.currentTime = te;
+      }
+    };
+
+    el.addEventListener("play", onPlay);
+    el.addEventListener("timeupdate", onTimeUpdate);
+    return () => {
+      el.removeEventListener("play", onPlay);
+      el.removeEventListener("timeupdate", onTimeUpdate);
+    };
+  }, [videoURL, videoDuration]);
+
+  useEffect(() => {
+    if (!videoURL || videoDuration <= 0) return;
+    let cancelled = false;
+
+    const generate = async () => {
+      const thumbVideo = document.createElement("video");
+      thumbVideo.src = videoURL;
+      thumbVideo.crossOrigin = "anonymous";
+      thumbVideo.muted = true;
+      thumbVideo.preload = "auto";
+
+      await new Promise<void>((res) => {
+        thumbVideo.onloadeddata = () => res();
+        thumbVideo.load();
+      });
+
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d")!;
+      const thumbWidth = 120;
+      const thumbHeight = Math.round(
+        (thumbVideo.videoHeight / thumbVideo.videoWidth) * thumbWidth,
+      );
+      canvas.width = thumbWidth;
+      canvas.height = thumbHeight;
+
+      const count = Math.min(20, Math.max(8, Math.ceil(videoDuration)));
+      const frames: string[] = [];
+
+      for (let i = 0; i < count; i++) {
+        if (cancelled) return;
+        const time = (i / count) * videoDuration;
+        thumbVideo.currentTime = time;
+        await new Promise<void>((res) => {
+          thumbVideo.onseeked = () => res();
+        });
+        ctx.drawImage(thumbVideo, 0, 0, thumbWidth, thumbHeight);
+        frames.push(canvas.toDataURL("image/jpeg", 0.5));
+      }
+
+      if (!cancelled) setThumbnails(frames);
+    };
+
+    generate();
+    return () => { cancelled = true; };
+  }, [videoURL, videoDuration]);
+
+  const timeToPercent = useCallback(
+    (t: number) => (videoDuration > 0 ? (t / videoDuration) * 100 : 0),
+    [videoDuration],
+  );
+
+  const pointerToTime = useCallback(
+    (clientX: number) => {
+      const rect = timelineRef.current?.getBoundingClientRect();
+      if (!rect || videoDuration <= 0) return 0;
+      const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      return Math.round(pct * videoDuration * 10) / 10;
+    },
+    [videoDuration],
+  );
+
+  const onPointerDown = useCallback(
+    (handle: "start" | "end") => (e: React.PointerEvent) => {
+      e.preventDefault();
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      draggingRef.current = handle;
+    },
+    [],
+  );
+
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!draggingRef.current) return;
+      const t = pointerToTime(e.clientX);
+      const el = videoElRef.current;
+      if (draggingRef.current === "start") {
+        const clamped = Math.min(t, trimEnd - 0.1);
+        setTrimStart(Math.max(0, clamped));
+        if (el) { el.pause(); el.currentTime = Math.max(0, clamped); }
+      } else {
+        const clamped = Math.max(t, trimStart + 0.1);
+        setTrimEnd(Math.min(videoDuration, clamped));
+        if (el) { el.pause(); el.currentTime = Math.min(videoDuration, clamped); }
+      }
+    },
+    [pointerToTime, trimStart, trimEnd, videoDuration],
+  );
+
+  const onPointerUp = useCallback(() => {
+    draggingRef.current = null;
+  }, []);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -221,6 +361,13 @@ export default function Home() {
       setStep("Reading video file…");
       await ffmpeg.writeFile("input", await fetchFile(video));
 
+      const trimArgs: string[] = [];
+      const isTrimmed = trimStart > 0 || (trimEnd > 0 && trimEnd < videoDuration);
+      if (isTrimmed) {
+        trimArgs.push("-ss", trimStart.toFixed(2));
+        trimArgs.push("-t", (trimEnd - trimStart).toFixed(2));
+      }
+
       const paletteFilter =
         maxColors < 256
           ? `fps=${fps},scale=${scale}:-1:flags=lanczos,palettegen=max_colors=${maxColors}`
@@ -228,11 +375,12 @@ export default function Home() {
 
       setStep("Generating color palette…");
       setProgress(0);
-      await ffmpeg.exec(["-i", "input", "-vf", paletteFilter, "-y", "palette.png"]);
+      await ffmpeg.exec([...trimArgs, "-i", "input", "-vf", paletteFilter, "-y", "palette.png"]);
 
       setStep("Creating GIF…");
       setProgress(0);
       await ffmpeg.exec([
+        ...trimArgs,
         "-i",
         "input",
         "-i",
@@ -273,6 +421,9 @@ export default function Home() {
     setVideoDuration(0);
     setVideoWidth(0);
     setVideoHeight(0);
+    setTrimStart(0);
+    setTrimEnd(0);
+    setThumbnails([]);
     setGifURL("");
     setGifSize(0);
     setProgress(0);
@@ -355,10 +506,131 @@ export default function Home() {
                   controls
                   className="w-full max-h-80 object-contain"
                 />
+                {/* Dark overlays showing trimmed-out regions */}
+                {videoDuration > 0 && trimStart > 0 && (
+                  <div
+                    className="absolute top-0 left-0 bottom-0 bg-black/50 pointer-events-none border-r-2 border-violet-500"
+                    style={{ width: `${timeToPercent(trimStart)}%` }}
+                  />
+                )}
+                {videoDuration > 0 && trimEnd < videoDuration && (
+                  <div
+                    className="absolute top-0 right-0 bottom-0 bg-black/50 pointer-events-none border-l-2 border-violet-500"
+                    style={{ width: `${timeToPercent(videoDuration - trimEnd)}%` }}
+                  />
+                )}
               </div>
 
+              {/* Filmstrip trim timeline */}
+              {videoDuration > 0 && (
+                <div className="mt-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-slate-500">Trim</span>
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="font-mono text-slate-500">{formatTimestamp(trimStart)}</span>
+                      <span className="text-slate-300">—</span>
+                      <span className="font-mono text-slate-500">{formatTimestamp(trimEnd)}</span>
+                      <span className="font-mono text-violet-600 font-semibold bg-violet-50 px-1.5 py-0.5 rounded">
+                        {formatDuration(trimEnd - trimStart)}
+                      </span>
+                      {(trimStart > 0 || trimEnd < videoDuration) && (
+                        <button
+                          onClick={() => { setTrimStart(0); setTrimEnd(videoDuration); }}
+                          disabled={isLocked}
+                          className="text-violet-500 hover:text-violet-700 transition-colors disabled:opacity-50"
+                        >
+                          Reset
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Filmstrip with drag handles */}
+                  <div
+                    ref={timelineRef}
+                    className="relative h-14 rounded-lg overflow-hidden select-none touch-none"
+                    onPointerMove={onPointerMove}
+                    onPointerUp={onPointerUp}
+                    onPointerLeave={onPointerUp}
+                  >
+                    {/* Thumbnail frames */}
+                    <div className="absolute inset-0 flex">
+                      {thumbnails.length > 0
+                        ? thumbnails.map((src, i) => (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              key={i}
+                              src={src}
+                              alt=""
+                              className="h-full flex-1 object-cover"
+                              draggable={false}
+                            />
+                          ))
+                        : <div className="w-full h-full bg-slate-200 animate-pulse" />
+                      }
+                    </div>
+
+                    {/* Dimmed regions outside selection */}
+                    <div
+                      className="absolute top-0 left-0 bottom-0 bg-black/60"
+                      style={{ width: `${timeToPercent(trimStart)}%` }}
+                    />
+                    <div
+                      className="absolute top-0 right-0 bottom-0 bg-black/60"
+                      style={{ width: `${timeToPercent(videoDuration - trimEnd)}%` }}
+                    />
+
+                    {/* Selected region border */}
+                    <div
+                      className="absolute top-0 bottom-0 border-y-2 border-violet-500 pointer-events-none"
+                      style={{
+                        left: `${timeToPercent(trimStart)}%`,
+                        right: `${timeToPercent(videoDuration - trimEnd)}%`,
+                      }}
+                    />
+
+                    {/* Start handle */}
+                    <div
+                      className="absolute top-0 bottom-0 w-5 -ml-2.5 cursor-col-resize z-10 flex items-center justify-center"
+                      style={{ left: `${timeToPercent(trimStart)}%` }}
+                      onPointerDown={onPointerDown("start")}
+                    >
+                      <div className="w-4 h-10 rounded-sm bg-violet-500 shadow-lg flex items-center justify-center">
+                        <div className="flex gap-px">
+                          <div className="w-0.5 h-4 bg-white/90 rounded-full" />
+                          <div className="w-0.5 h-4 bg-white/90 rounded-full" />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* End handle */}
+                    <div
+                      className="absolute top-0 bottom-0 w-5 -ml-2.5 cursor-col-resize z-10 flex items-center justify-center"
+                      style={{ left: `${timeToPercent(trimEnd)}%` }}
+                      onPointerDown={onPointerDown("end")}
+                    >
+                      <div className="w-4 h-10 rounded-sm bg-violet-500 shadow-lg flex items-center justify-center">
+                        <div className="flex gap-px">
+                          <div className="w-0.5 h-4 bg-white/90 rounded-full" />
+                          <div className="w-0.5 h-4 bg-white/90 rounded-full" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Time ruler labels */}
+                  <div className="flex justify-between mt-1 text-[10px] font-mono text-slate-400">
+                    <span>0:00</span>
+                    <span>{formatTimestamp(videoDuration * 0.25)}</span>
+                    <span>{formatTimestamp(videoDuration * 0.5)}</span>
+                    <span>{formatTimestamp(videoDuration * 0.75)}</span>
+                    <span>{formatTimestamp(videoDuration)}</span>
+                  </div>
+                </div>
+              )}
+
               {/* Video metadata */}
-              <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-sm text-slate-500">
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-sm text-slate-500">
                 <span className="truncate max-w-[60%]">{video?.name}</span>
                 <span>{video ? formatSize(video.size) : ""}</span>
                 {videoDuration > 0 && <span>{formatDuration(videoDuration)}</span>}
