@@ -15,19 +15,11 @@ GifX converts videos into high-quality GIFs. Use it as a **web app** (runs entir
 * **CLI tool** — shell script for batch/automated workflows
 * Optimized palette-based GIF creation for superior color reproduction
 
-## Web App (Vercel)
+## Web App
 
-GifX is available as a web app that runs entirely in the browser — no ffmpeg installation required.
+GifX is available as a web app that runs entirely in the browser — no installs needed. Built with [ffmpeg.wasm](https://ffmpegwasm.netlify.app/) (FFmpeg compiled to WebAssembly), all video processing happens client-side. Nothing is uploaded to any server.
 
-The web version uses [ffmpeg.wasm](https://ffmpegwasm.netlify.app/) (FFmpeg compiled to WebAssembly) so all video processing happens client-side. Nothing is uploaded to any server.
-
-### Deploy to Vercel
-
-1. Push this repo to GitHub
-2. Go to [vercel.com/new](https://vercel.com/new) and import the repository
-3. Vercel will auto-detect Next.js — click **Deploy**
-
-### Run locally
+To run locally:
 
 ```bash
 npm install
@@ -57,7 +49,7 @@ chmod +x gifx.sh
 Run the tool with the following command:
 
 ```
-./gifx.sh <input_video> [output_gif] [fps] [scale]
+./gifx.sh <input_video> [output_gif] [fps] [scale] [max_colors]
 ```
 
 ### Arguments
@@ -65,6 +57,7 @@ Run the tool with the following command:
 * `[output_gif]`: Name of the output GIF file (optional; default: output.gif).
 * `[fps]`: Frames per second for the GIF (optional; default: 15).
 * `[scale]`: Width of the GIF in pixels (optional; default: 800).
+* `[max_colors]`: Palette colors, 16–256 (optional; default: 256). Lower values = smaller file.
 
 ### Examples
 
@@ -73,7 +66,7 @@ Run the tool with the following command:
 ```
 ./gifx.sh input.mp4
 ```
-* Creates a GIF (`output.gif`) with `fps=15` and `scale=800`.
+* Creates a GIF (`output.gif`) with `fps=15`, `scale=800`, and full 256-color palette.
 
 2. Custom Output Filename:
    
@@ -86,9 +79,16 @@ Run the tool with the following command:
 
 ```
 ./gifx.sh input.mp4 my_animation.gif 10 600
-````
+```
 
-4. Help: If the command is run without arguments, it displays a usage guide.
+4. With Compression (fewer colors = smaller file):
+
+```
+./gifx.sh input.mp4 compressed.gif 15 800 64
+```
+* Creates a GIF with 64 colors instead of 256, significantly reducing file size.
+
+5. Help: If the command is run without arguments, it displays a usage guide.
 
 <hr>
 
@@ -109,14 +109,23 @@ Run the tool with the following command:
   * 600: Medium resolution for sharing.
   * 800 (default): High-quality GIFs.
   * 1000+: Detailed visuals or presentations.
+
+### Compression (max_colors)
+* Controls how many colors are in the GIF palette. Fewer colors = smaller file size.
+* Recommended values:
+  * 256 (default): No compression, best quality.
+  * 128: Light compression, slightly smaller.
+  * 64: Medium compression, noticeably smaller.
+  * 32: Heavy compression, much smaller.
+  * 16: Maximum compression, smallest file.
  
 <hr>
 
 
 ## How It Works
-1. Palette Generation: Generates an optimized color palette to ensure the highest possible GIF quality:
+1. Palette Generation: Generates an optimized color palette (with optional `max_colors` for compression):
 ```
-ffmpeg -i input.mp4 -vf "fps=<fps>,scale=<scale>:-1:flags=lanczos,palettegen" palette.png
+ffmpeg -i input.mp4 -vf "fps=<fps>,scale=<scale>:-1:flags=lanczos,palettegen=max_colors=<max_colors>" palette.png
 ```
 2. GIF Creation: Creates the GIF using the palette:
 ```

@@ -2,7 +2,7 @@
 
 # Usage function
 usage() {
-  echo "Usage: $0 <input_video> [output_gif] [fps] [scale]"
+  echo "Usage: $0 <input_video> [output_gif] [fps] [scale] [max_colors]"
   echo ""
   echo "Converts a video to a GIF with optional parameters for customization."
   echo ""
@@ -11,6 +11,7 @@ usage() {
   echo "  output_gif    Output GIF filename (default: output.gif)."
   echo "  fps           Frames per second (default: 15)."
   echo "  scale         Width of the GIF in pixels (default: 800)."
+  echo "  max_colors    Palette colors, 16-256 (default: 256). Lower = smaller file."
   echo ""
   echo "Common FPS Values:"
   echo "  5  - Low motion (e.g., slideshows), minimal size."
@@ -24,6 +25,13 @@ usage() {
   echo "  600 - Medium resolution, general-purpose sharing."
   echo "  800 - High resolution (default), good for presentations."
   echo "  1000+ - Full resolution, detailed visuals, large size."
+  echo ""
+  echo "Compression (max_colors):"
+  echo "  256 - No compression (default), best quality."
+  echo "  128 - Light compression, slightly smaller file."
+  echo "  64  - Medium compression, noticeably smaller."
+  echo "  32  - Heavy compression, much smaller file."
+  echo "  16  - Maximum compression, smallest file."
   exit 1
 }
 
@@ -34,9 +42,10 @@ fi
 
 # Variables
 INPUT_VIDEO="$1"
-OUTPUT_GIF="${2:-output.gif}"  # Default output is output.gif
-FPS="${3:-15}"  # Default FPS is 15
-SCALE="${4:-800}"  # Default scale is 800 pixels wide
+OUTPUT_GIF="${2:-output.gif}"
+FPS="${3:-15}"
+SCALE="${4:-800}"
+MAX_COLORS="${5:-256}"
 PALETTE="palette.png"
 
 # Check if ffmpeg is installed
@@ -56,9 +65,15 @@ echo "Input Video: $INPUT_VIDEO"
 echo "Output GIF: $OUTPUT_GIF"
 echo "FPS: $FPS"
 echo "Scale: $SCALE"
+echo "Max Colors: $MAX_COLORS"
 
-# Generate palette
-ffmpeg -i "$INPUT_VIDEO" -vf "fps=$FPS,scale=$SCALE:-1:flags=lanczos,palettegen" "$PALETTE"
+if [ "$MAX_COLORS" -lt 256 ] 2>/dev/null; then
+  PALETTE_FILTER="fps=$FPS,scale=$SCALE:-1:flags=lanczos,palettegen=max_colors=$MAX_COLORS"
+else
+  PALETTE_FILTER="fps=$FPS,scale=$SCALE:-1:flags=lanczos,palettegen"
+fi
+
+ffmpeg -i "$INPUT_VIDEO" -vf "$PALETTE_FILTER" "$PALETTE"
 
 # Create GIF using the palette
 ffmpeg -i "$INPUT_VIDEO" -i "$PALETTE" -lavfi "fps=$FPS,scale=$SCALE:-1:flags=lanczos [x]; [x][1:v] paletteuse=dither=sierra2_4a" "$OUTPUT_GIF"
