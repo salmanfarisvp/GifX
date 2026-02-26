@@ -4,6 +4,34 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile, toBlobURL } from "@ffmpeg/util";
 
+interface VisitorStats {
+  total: number;
+  unique: number;
+}
+
+function useVisitorStats() {
+  const [stats, setStats] = useState<VisitorStats | null>(null);
+
+  useEffect(() => {
+    fetch("/api/visitors")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.total !== undefined) {
+          setStats({ total: data.total, unique: data.unique });
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  return stats;
+}
+
+function formatCount(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
+
 type Status = "idle" | "ready" | "loading" | "converting" | "done" | "error";
 type Quality = "ultra" | "small" | "medium" | "high" | "custom";
 
@@ -70,6 +98,7 @@ function compressionFromColors(colors: number) {
 }
 
 export default function Home() {
+  const visitorStats = useVisitorStats();
   const [status, setStatus] = useState<Status>("idle");
   const [video, setVideo] = useState<File | null>(null);
   const [videoURL, setVideoURL] = useState("");
@@ -596,7 +625,28 @@ export default function Home() {
           )}
         </div>
 
-        <div className="mt-8 text-center space-y-4">
+        {/* ── Visitor Stats ── */}
+        {visitorStats && (
+          <div className="mt-8 flex justify-center gap-6">
+            <div className="flex items-center gap-2 rounded-full bg-white px-4 py-2 shadow-sm border border-slate-100">
+              <svg className="h-4 w-4 text-violet-500" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.64 0 8.577 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.64 0-8.577-3.007-9.963-7.178z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              <span className="text-sm font-semibold text-slate-700">{formatCount(visitorStats.total)}</span>
+              <span className="text-xs text-slate-400">visits</span>
+            </div>
+            <div className="flex items-center gap-2 rounded-full bg-white px-4 py-2 shadow-sm border border-slate-100">
+              <svg className="h-4 w-4 text-indigo-500" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+              </svg>
+              <span className="text-sm font-semibold text-slate-700">{formatCount(visitorStats.unique)}</span>
+              <span className="text-xs text-slate-400">unique visitors</span>
+            </div>
+          </div>
+        )}
+
+        <div className="mt-6 text-center space-y-4">
           <p className="text-sm text-slate-400">
             Powered by FFmpeg.wasm &middot; Runs entirely in your browser &middot; No
             uploads, 100% private
