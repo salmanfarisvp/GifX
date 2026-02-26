@@ -116,7 +116,37 @@ Yes, you can run the script on Windows through a Unix-like environment like Git 
 
 <hr>
 
+## Web App (Vercel)
+
+GifX is also available as a web app that runs entirely in the browser — no ffmpeg installation required.
+
+### How it works
+
+The web version uses [ffmpeg.wasm](https://ffmpegwasm.netlify.app/) (FFmpeg compiled to WebAssembly) so all video processing happens client-side. Nothing is uploaded to any server.
+
+### Deploy to Vercel
+
+1. Push this repo to GitHub
+2. Go to [vercel.com/new](https://vercel.com/new) and import the repository
+3. Vercel will auto-detect Next.js — click **Deploy**
+
+### Run locally
+
+```bash
+npm install
+npm run dev
+```
+
+Then open [http://localhost:3000](http://localhost:3000).
+
+<hr>
+
 ## Changelog
+### Version 2.0
+* Web app version powered by ffmpeg.wasm
+* Drag-and-drop video upload with in-browser conversion
+* No system dependencies required for the web version
+
 ### Version 1.0
 * Initial release.
 * Support for customizable `fps` and `scale`.
@@ -132,6 +162,14 @@ GifX is open-source and licensed under the MIT License. Feel free to use, modify
 ## Acknowledgment
 
 This tool was developed with the support of ChatGPT, an AI assistant by OpenAI. ChatGPT played a key role in designing and optimizing the tool for ease of use and performance.
+
+<hr>
+
+## Support
+
+If you find GifX useful and would like to support its development, consider buying me a coffee. Your support means a lot and helps keep the project going!
+
+<a href="https://www.buymeacoffee.com/salmanfarisvp" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-violet.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
 
 <hr>
 
