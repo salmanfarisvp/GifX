@@ -2,11 +2,9 @@
 
 GifX converts videos into high-quality GIFs. Use it as a **web app** (runs entirely in the browser — no installs needed) or as a **command-line tool**.
 
-<a href="https://www.buymeacoffee.com/salmanfarisvp" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-violet.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
-
 <hr>
 
-## Features
+### Features
 * **Web app** — drag-and-drop video conversion in the browser, no dependencies required
 * **Quality presets** — Ultra Small, Small, Medium, High for one-click simplicity
 * **Advanced controls** — fine-tune FPS, width, and compression (palette color reduction)
