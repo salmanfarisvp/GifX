@@ -3,9 +3,9 @@ import { Analytics } from "@vercel/analytics/react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "GifX — Video to GIF Converter",
+  title: "GifX — Video to GIF Converter & GIF Compressor",
   description:
-    "Convert videos to high-quality GIFs right in your browser. No uploads, no dependencies, 100% private.",
+    "Convert videos to high-quality GIFs and compress existing GIFs right in your browser. No uploads, no dependencies, 100% private.",
 };
 
 export default function RootLayout({
