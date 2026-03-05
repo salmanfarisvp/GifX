@@ -32,7 +32,7 @@ function formatCount(n: number) {
   return n.toLocaleString();
 }
 
-type ActiveTab = "convert" | "compress";
+type ActiveTab = "convert" | "compress" | "image";
 type Status = "idle" | "ready" | "loading" | "converting" | "done" | "error";
 type Quality = "ultra" | "small" | "medium" | "high" | "custom";
 type CompressStatus = "idle" | "ready" | "loading" | "compressing" | "done" | "error";
@@ -93,6 +93,65 @@ const COMPRESS_PRESETS: Record<Exclude<CompressLevel, "custom">, CompressPreset>
 
 const FPS_PRESETS = [5, 10, 15, 24, 30];
 const SCALE_PRESETS = [320, 480, 640, 800, 1080];
+
+type ImageFormat = "png" | "jpeg" | "webp" | "bmp" | "tiff" | "gif";
+type ImageStatus = "idle" | "ready" | "loading" | "converting" | "done" | "error";
+
+interface ImageFormatOption {
+  ext: string;
+  label: string;
+  mime: string;
+  hasQuality: boolean;
+}
+
+const IMAGE_FORMATS: Record<ImageFormat, ImageFormatOption> = {
+  png: { ext: "png", label: "PNG", mime: "image/png", hasQuality: false },
+  jpeg: { ext: "jpg", label: "JPEG", mime: "image/jpeg", hasQuality: true },
+  webp: { ext: "webp", label: "WebP", mime: "image/webp", hasQuality: true },
+  bmp: { ext: "bmp", label: "BMP", mime: "image/bmp", hasQuality: false },
+  tiff: { ext: "tiff", label: "TIFF", mime: "image/tiff", hasQuality: false },
+  gif: { ext: "gif", label: "GIF", mime: "image/gif", hasQuality: false },
+};
+
+type ImgQualityLevel = "small" | "medium" | "high";
+
+interface ImgQualityPreset {
+  value: number;
+  label: string;
+  desc: string;
+}
+
+const IMG_QUALITY_PRESETS: Record<ImgQualityLevel, ImgQualityPreset> = {
+  small: { value: 50, label: "Small", desc: "Tiniest file" },
+  medium: { value: 75, label: "Medium", desc: "Balanced" },
+  high: { value: 95, label: "High", desc: "Best quality" },
+};
+
+const ACCEPTED_IMAGE_TYPES = "image/png,image/jpeg,image/webp,image/bmp,image/tiff,image/gif";
+
+function detectImageFormat(mime: string): ImageFormat | null {
+  const map: Record<string, ImageFormat> = {
+    "image/png": "png",
+    "image/jpeg": "jpeg",
+    "image/webp": "webp",
+    "image/bmp": "bmp",
+    "image/tiff": "tiff",
+    "image/gif": "gif",
+  };
+  return map[mime] || null;
+}
+
+function mimeToExt(mime: string): string {
+  const map: Record<string, string> = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "image/bmp": "bmp",
+    "image/tiff": "tiff",
+    "image/gif": "gif",
+  };
+  return map[mime] || "png";
+}
 
 function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -168,11 +227,27 @@ export default function Home() {
   const [compressError, setCompressError] = useState("");
   const [compressDragOver, setCompressDragOver] = useState(false);
 
+  // ─── Image Convert state ───
+  const [imgStatus, setImgStatus] = useState<ImageStatus>("idle");
+  const [imgFile, setImgFile] = useState<File | null>(null);
+  const [imgFileURL, setImgFileURL] = useState("");
+  const [imgFileSize, setImgFileSize] = useState(0);
+  const [imgOutputFormat, setImgOutputFormat] = useState<ImageFormat>("png");
+  const [imgQuality, setImgQuality] = useState(75);
+  const [imgQualityLevel, setImgQualityLevel] = useState<ImgQualityLevel>("medium");
+  const [imgOutputURL, setImgOutputURL] = useState("");
+  const [imgOutputSize, setImgOutputSize] = useState(0);
+  const [imgProgress, setImgProgress] = useState(0);
+  const [imgStep, setImgStep] = useState("");
+  const [imgError, setImgError] = useState("");
+  const [imgDragOver, setImgDragOver] = useState(false);
+
   // ─── Shared refs ───
   const ffmpegRef = useRef<FFmpeg | null>(null);
   const progressSetterRef = useRef<(val: number) => void>(() => {});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const compressFileInputRef = useRef<HTMLInputElement>(null);
+  const imgFileInputRef = useRef<HTMLInputElement>(null);
   const videoElRef = useRef<HTMLVideoElement>(null);
 
   const [thumbnails, setThumbnails] = useState<string[]>([]);
@@ -649,8 +724,115 @@ export default function Home() {
     setCompressStatus("idle");
   };
 
+  // ─── Image Convert handlers ───
+  const handleImageFile = useCallback(
+    (file: File) => {
+      const format = detectImageFormat(file.type);
+      if (!format) {
+        setImgError("Unsupported image format. Please use PNG, JPEG, WebP, BMP, TIFF, or GIF.");
+        setImgStatus("error");
+        return;
+      }
+      if (imgFileURL) URL.revokeObjectURL(imgFileURL);
+      if (imgOutputURL) URL.revokeObjectURL(imgOutputURL);
+      setImgFile(file);
+      setImgFileURL(URL.createObjectURL(file));
+      setImgFileSize(file.size);
+      setImgOutputURL("");
+      setImgOutputSize(0);
+      setImgError("");
+      setImgStatus("ready");
+      const defaultFormat: ImageFormat = format === "png" ? "jpeg" : "png";
+      setImgOutputFormat(defaultFormat);
+    },
+    [imgFileURL, imgOutputURL],
+  );
+
+  const handleImageDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setImgDragOver(false);
+      const file = e.dataTransfer.files[0];
+      if (file) handleImageFile(file);
+    },
+    [handleImageFile],
+  );
+
+  const convertImage = async () => {
+    if (!imgFile) return;
+    try {
+      if (!ffmpegRef.current) {
+        setImgStatus("loading");
+        setImgStep("Downloading converter engine (~30 MB, one-time)…");
+        progressSetterRef.current = setImgProgress;
+        await ensureFFmpeg();
+      }
+
+      const ffmpeg = ffmpegRef.current!;
+      progressSetterRef.current = setImgProgress;
+      setImgStatus("converting");
+      setImgProgress(0);
+
+      const inputExt = mimeToExt(imgFile.type);
+      const inputName = `input.${inputExt}`;
+      const fmt = IMAGE_FORMATS[imgOutputFormat];
+      const outputName = `output.${fmt.ext}`;
+
+      setImgStep("Reading image file…");
+      await ffmpeg.writeFile(inputName, await fetchFile(imgFile));
+
+      setImgStep("Converting image…");
+      setImgProgress(0);
+      const args: string[] = ["-i", inputName];
+
+      if (imgOutputFormat === "jpeg") {
+        const qv = Math.round(2 + ((100 - imgQuality) / 100) * 29);
+        args.push("-q:v", String(qv));
+      } else if (imgOutputFormat === "webp") {
+        args.push("-lossless", "0", "-q:v", String(imgQuality));
+      }
+
+      args.push("-y", outputName);
+      await ffmpeg.exec(args);
+
+      setImgStep("Finalizing…");
+      const data = (await ffmpeg.readFile(outputName)) as Uint8Array;
+      const blob = new Blob([new Uint8Array(data)], { type: fmt.mime });
+
+      if (imgOutputURL) URL.revokeObjectURL(imgOutputURL);
+      setImgOutputURL(URL.createObjectURL(blob));
+      setImgOutputSize(data.length);
+      setImgStatus("done");
+      setImgStep("");
+
+      await ffmpeg.deleteFile(inputName);
+      await ffmpeg.deleteFile(outputName);
+    } catch (err) {
+      console.error("Image conversion failed:", err);
+      setImgError(
+        err instanceof Error ? err.message : "Conversion failed. Please try again.",
+      );
+      setImgStatus("error");
+    }
+  };
+
+  const resetImage = () => {
+    if (imgFileURL) URL.revokeObjectURL(imgFileURL);
+    if (imgOutputURL) URL.revokeObjectURL(imgOutputURL);
+    setImgFile(null);
+    setImgFileURL("");
+    setImgFileSize(0);
+    setImgOutputURL("");
+    setImgOutputSize(0);
+    setImgProgress(0);
+    setImgStep("");
+    setImgError("");
+    setImgStatus("idle");
+  };
+
   const isLocked = status === "loading" || status === "converting";
   const isCompressLocked = compressStatus === "loading" || compressStatus === "compressing";
+  const isImageLocked = imgStatus === "loading" || imgStatus === "converting";
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
@@ -659,7 +841,7 @@ export default function Home() {
           GifX
         </h1>
         <p className="mt-2 text-slate-500 text-lg">
-          Convert videos to high-quality GIFs — right in your browser
+          Convert videos, GIFs &amp; images — right in your browser
         </p>
       </header>
 
@@ -669,7 +851,7 @@ export default function Home() {
           <div className="flex border-b border-slate-100">
             <button
               onClick={() => setActiveTab("convert")}
-              disabled={isLocked || isCompressLocked}
+              disabled={isLocked || isCompressLocked || isImageLocked}
               className={`flex-1 py-3.5 text-sm font-semibold transition-all duration-200 relative disabled:opacity-50 disabled:cursor-not-allowed ${
                 activeTab === "convert"
                   ? "text-violet-700"
@@ -688,7 +870,7 @@ export default function Home() {
             </button>
             <button
               onClick={() => setActiveTab("compress")}
-              disabled={isLocked || isCompressLocked}
+              disabled={isLocked || isCompressLocked || isImageLocked}
               className={`flex-1 py-3.5 text-sm font-semibold transition-all duration-200 relative disabled:opacity-50 disabled:cursor-not-allowed ${
                 activeTab === "compress"
                   ? "text-violet-700"
@@ -702,6 +884,25 @@ export default function Home() {
                 Compress GIF
               </span>
               {activeTab === "compress" && (
+                <div className="absolute bottom-0 left-4 right-4 h-0.5 bg-violet-600 rounded-full" />
+              )}
+            </button>
+            <button
+              onClick={() => setActiveTab("image")}
+              disabled={isLocked || isCompressLocked || isImageLocked}
+              className={`flex-1 py-3.5 text-sm font-semibold transition-all duration-200 relative disabled:opacity-50 disabled:cursor-not-allowed ${
+                activeTab === "image"
+                  ? "text-violet-700"
+                  : "text-slate-400 hover:text-slate-600"
+              }`}
+            >
+              <span className="flex items-center justify-center gap-2">
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+                </svg>
+                Convert Image
+              </span>
+              {activeTab === "image" && (
                 <div className="absolute bottom-0 left-4 right-4 h-0.5 bg-violet-600 rounded-full" />
               )}
             </button>
@@ -1514,6 +1715,247 @@ export default function Home() {
                   </div>
                   <button
                     onClick={resetCompress}
+                    className="mt-4 w-full py-3 px-6 rounded-xl font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
+                  >
+                    Try Again
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ═══════════════════════════════════════════════ */}
+          {/* ── IMAGE CONVERT TAB ── */}
+          {/* ═══════════════════════════════════════════════ */}
+          {activeTab === "image" && (
+            <>
+              {/* ── Upload Zone ── */}
+              {imgStatus === "idle" && (
+                <div
+                  className={`m-6 border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all duration-200 ${
+                    imgDragOver
+                      ? "border-violet-400 bg-violet-50"
+                      : "border-slate-200 hover:border-violet-300 hover:bg-slate-50"
+                  }`}
+                  onDrop={handleImageDrop}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setImgDragOver(true);
+                  }}
+                  onDragLeave={() => setImgDragOver(false)}
+                  onClick={() => imgFileInputRef.current?.click()}
+                >
+                  <input
+                    ref={imgFileInputRef}
+                    type="file"
+                    accept={ACCEPTED_IMAGE_TYPES}
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleImageFile(file);
+                    }}
+                  />
+                  <svg
+                    className="mx-auto h-16 w-16 text-slate-300"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    strokeWidth={1}
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25a2.25 2.25 0 0 0-2.25-2.25H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z"
+                    />
+                  </svg>
+                  <p className="mt-4 text-lg font-medium text-slate-700">
+                    Drop your image here
+                  </p>
+                  <p className="mt-1 text-sm text-slate-400">
+                    or click to browse &middot; PNG, JPEG, WebP, BMP, TIFF, GIF
+                  </p>
+                </div>
+              )}
+
+              {/* ── Image Preview + Format Picker ── */}
+              {(imgStatus === "ready" || isImageLocked) && (
+                <div className="p-6">
+                  <div className="rounded-xl overflow-hidden bg-slate-50 border border-slate-100">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={imgFileURL} alt="Original" className="w-full max-h-80 object-contain" />
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-500">
+                    <span className="truncate max-w-[60%]">{imgFile?.name}</span>
+                    <span className="font-mono font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded">
+                      {formatSize(imgFileSize)}
+                    </span>
+                  </div>
+
+                  {/* Output Format */}
+                  <div className="mt-6">
+                    <label className="text-sm font-medium text-slate-700">Output Format</label>
+                    <div className="mt-2 grid grid-cols-3 gap-3 sm:grid-cols-6">
+                      {(Object.entries(IMAGE_FORMATS) as [ImageFormat, ImageFormatOption][]).map(
+                        ([key, fmt]) => (
+                          <button
+                            key={key}
+                            onClick={() => setImgOutputFormat(key)}
+                            disabled={isImageLocked}
+                            className={`rounded-xl border-2 p-3 text-center transition-all duration-150 ${
+                              imgOutputFormat === key
+                                ? "border-violet-500 bg-violet-50"
+                                : "border-slate-200 hover:border-slate-300 bg-white"
+                            } disabled:opacity-50 disabled:cursor-not-allowed`}
+                          >
+                            <span
+                              className={`block text-sm font-semibold ${
+                                imgOutputFormat === key ? "text-violet-700" : "text-slate-700"
+                              }`}
+                            >
+                              {fmt.label}
+                            </span>
+                          </button>
+                        ),
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Quality Presets (JPEG/WebP only) */}
+                  {IMAGE_FORMATS[imgOutputFormat].hasQuality && (
+                    <div className="mt-6">
+                      <label className="text-sm font-medium text-slate-700">Quality</label>
+                      <div className="mt-2 grid grid-cols-3 gap-3">
+                        {(Object.entries(IMG_QUALITY_PRESETS) as [ImgQualityLevel, ImgQualityPreset][]).map(
+                          ([key, preset]) => (
+                            <button
+                              key={key}
+                              onClick={() => {
+                                setImgQualityLevel(key);
+                                setImgQuality(preset.value);
+                              }}
+                              disabled={isImageLocked}
+                              className={`rounded-xl border-2 p-3 text-center transition-all duration-150 ${
+                                imgQualityLevel === key
+                                  ? "border-violet-500 bg-violet-50"
+                                  : "border-slate-200 hover:border-slate-300 bg-white"
+                              } disabled:opacity-50 disabled:cursor-not-allowed`}
+                            >
+                              <span
+                                className={`block text-sm font-semibold ${
+                                  imgQualityLevel === key ? "text-violet-700" : "text-slate-700"
+                                }`}
+                              >
+                                {preset.label}
+                              </span>
+                              <span className="block text-xs text-slate-400 mt-0.5">
+                                {preset.desc}
+                              </span>
+                            </button>
+                          ),
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Convert Button */}
+                  <button
+                    onClick={convertImage}
+                    disabled={isImageLocked}
+                    className="mt-6 w-full py-3 px-6 rounded-xl font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-lg shadow-violet-200"
+                  >
+                    {imgStatus === "ready"
+                      ? `Convert to ${IMAGE_FORMATS[imgOutputFormat].label}`
+                      : imgStatus === "loading"
+                        ? "Loading Engine…"
+                        : "Converting…"}
+                  </button>
+
+                  {/* Progress bar */}
+                  {isImageLocked && (
+                    <div className="mt-4">
+                      <div className="flex justify-between text-sm mb-1.5">
+                        <span className="text-slate-600">{imgStep}</span>
+                        {imgStatus === "converting" && (
+                          <span className="text-violet-600 font-mono">{imgProgress}%</span>
+                        )}
+                      </div>
+                      <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                        {imgStatus === "loading" ? (
+                          <div className="h-full bg-gradient-to-r from-violet-500 to-indigo-500 rounded-full animate-pulse w-full" />
+                        ) : (
+                          <div
+                            className="h-full bg-gradient-to-r from-violet-500 to-indigo-500 rounded-full transition-all duration-300"
+                            style={{ width: `${imgProgress}%` }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── Result ── */}
+              {imgStatus === "done" && imgOutputURL && (
+                <div className="p-6">
+                  <div className="rounded-xl overflow-hidden bg-slate-50 border border-slate-100">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={imgOutputURL} alt="Converted" className="w-full max-h-80 object-contain" />
+                  </div>
+
+                  <div className="mt-4 rounded-xl bg-slate-50 border border-slate-100 p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-center flex-1">
+                        <span className="block text-xs text-slate-400 mb-1">Original</span>
+                        <span className="block text-lg font-mono font-semibold text-slate-700">
+                          {formatSize(imgFileSize)}
+                        </span>
+                      </div>
+                      <div className="flex flex-col items-center px-4">
+                        <svg className="h-5 w-5 text-slate-300" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
+                        </svg>
+                        <span className="mt-1 text-xs font-semibold text-violet-600 bg-violet-50 px-2 py-0.5 rounded-full">
+                          {IMAGE_FORMATS[imgOutputFormat].label}
+                        </span>
+                      </div>
+                      <div className="text-center flex-1">
+                        <span className="block text-xs text-slate-400 mb-1">Converted</span>
+                        <span className="block text-lg font-mono font-semibold text-violet-700">
+                          {formatSize(imgOutputSize)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <a
+                    href={imgOutputURL}
+                    download={
+                      imgFile?.name?.replace(/\.[^.]+$/, `.${IMAGE_FORMATS[imgOutputFormat].ext}`) ||
+                      `output.${IMAGE_FORMATS[imgOutputFormat].ext}`
+                    }
+                    className="mt-4 block w-full py-3 px-6 rounded-xl font-semibold text-sm text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 transition-all duration-200 shadow-lg shadow-violet-200 text-center"
+                  >
+                    Download {IMAGE_FORMATS[imgOutputFormat].label} ({formatSize(imgOutputSize)})
+                  </a>
+
+                  <button
+                    onClick={resetImage}
+                    className="mt-3 w-full py-3 px-6 rounded-xl font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
+                  >
+                    Convert Another
+                  </button>
+                </div>
+              )}
+
+              {/* ── Error ── */}
+              {imgStatus === "error" && (
+                <div className="p-6">
+                  <div className="rounded-xl bg-red-50 border border-red-100 p-4">
+                    <p className="text-red-600 text-sm">{imgError}</p>
+                  </div>
+                  <button
+                    onClick={resetImage}
                     className="mt-4 w-full py-3 px-6 rounded-xl font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
                   >
                     Try Again
