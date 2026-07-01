@@ -153,6 +153,28 @@ function mimeToExt(mime: string): string {
   return map[mime] || "png";
 }
 
+interface ImgBatchItem {
+  id: string;
+  file: File;
+  inputURL: string;
+  inputSize: number;
+  status: "pending" | "converting" | "done" | "error";
+  outputURL?: string;
+  outputSize?: number;
+  error?: string;
+}
+
+interface VideoBatchItem {
+  id: string;
+  file: File;
+  status: "pending" | "converting" | "done" | "error";
+  gifURL?: string;
+  gifSize?: number;
+  webpURL?: string;
+  webpSize?: number;
+  error?: string;
+}
+
 function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -242,12 +264,20 @@ export default function Home() {
   const [imgError, setImgError] = useState("");
   const [imgDragOver, setImgDragOver] = useState(false);
 
+  // ─── Batch state ───
+  const [imgBatchItems, setImgBatchItems] = useState<ImgBatchItem[]>([]);
+  const [imgBatchMode, setImgBatchMode] = useState(false);
+  const [videoBatchItems, setVideoBatchItems] = useState<VideoBatchItem[]>([]);
+  const [videoBatchMode, setVideoBatchMode] = useState(false);
+
   // ─── Shared refs ───
   const ffmpegRef = useRef<FFmpeg | null>(null);
   const progressSetterRef = useRef<(val: number) => void>(() => {});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const compressFileInputRef = useRef<HTMLInputElement>(null);
   const imgFileInputRef = useRef<HTMLInputElement>(null);
+  const imgBatchFileInputRef = useRef<HTMLInputElement>(null);
+  const videoBatchFileInputRef = useRef<HTMLInputElement>(null);
   const videoElRef = useRef<HTMLVideoElement>(null);
 
   const [thumbnails, setThumbnails] = useState<string[]>([]);
@@ -462,14 +492,53 @@ export default function Home() {
     draggingRef.current = null;
   }, []);
 
+  const handleVideoFiles = useCallback(
+    (files: File[]) => {
+      if (files.length === 1) {
+        setVideoBatchMode(false);
+        handleFile(files[0]);
+        return;
+      }
+      const valid: VideoBatchItem[] = [];
+      for (const file of files) {
+        if (file.type.startsWith("video/")) {
+          valid.push({ id: `${file.name}-${file.size}-${valid.length}`, file, status: "pending" });
+        }
+      }
+      if (valid.length === 0) {
+        setError("Please select video files.");
+        setStatus("error");
+        return;
+      }
+      setVideoBatchItems(valid);
+      setVideoBatchMode(true);
+      setStatus("ready");
+      setError("");
+    },
+    [handleFile],
+  );
+
+  const addMoreVideoFiles = useCallback((files: File[]) => {
+    const newItems: VideoBatchItem[] = [];
+    for (const file of files) {
+      if (file.type.startsWith("video/")) {
+        newItems.push({ id: `${file.name}-${file.size}-${newItems.length}`, file, status: "pending" });
+      }
+    }
+    if (newItems.length > 0) {
+      setVideoBatchItems(prev => [...prev, ...newItems]);
+      setStatus("ready");
+    }
+  }, []);
+
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragOver(false);
-      const file = e.dataTransfer.files[0];
-      if (file) handleFile(file);
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length > 0) handleVideoFiles(files);
     },
-    [handleFile],
+    [handleVideoFiles],
   );
 
   const convert = async () => {
@@ -587,6 +656,94 @@ export default function Home() {
     setStep("");
     setError("");
     setStatus("idle");
+  };
+
+  const convertBatchVideos = async () => {
+    const snapshot = videoBatchItems.slice();
+    const pendingIndices = snapshot.map((it, i) => (it.status === "pending" ? i : -1)).filter(i => i >= 0);
+    if (pendingIndices.length === 0) return;
+
+    try {
+      if (!ffmpegRef.current) {
+        setStatus("loading");
+        setStep("Downloading converter engine (~30 MB, one-time)…");
+        progressSetterRef.current = setProgress;
+        await ensureFFmpeg();
+      }
+
+      setStatus("converting");
+
+      for (const idx of pendingIndices) {
+        const item = snapshot[idx];
+        setVideoBatchItems(prev => prev.map((it, i) => i === idx ? { ...it, status: "converting" } : it));
+
+        try {
+          const ffmpeg = ffmpegRef.current!;
+          progressSetterRef.current = setProgress;
+          setProgress(0);
+          setStep(`Processing ${item.file.name} (${pendingIndices.indexOf(idx) + 1}/${pendingIndices.length})…`);
+
+          await ffmpeg.writeFile("input", await fetchFile(item.file));
+
+          const paletteFilter =
+            maxColors < 256
+              ? `fps=${fps},scale=${scale}:-1:flags=lanczos,palettegen=max_colors=${maxColors}`
+              : `fps=${fps},scale=${scale}:-1:flags=lanczos,palettegen`;
+
+          await ffmpeg.exec(["-i", "input", "-vf", paletteFilter, "-y", "palette.png"]);
+          await ffmpeg.exec([
+            "-i", "input", "-i", "palette.png",
+            "-lavfi", `fps=${fps},scale=${scale}:-1:flags=lanczos [x]; [x][1:v] paletteuse=dither=sierra2_4a`,
+            "-y", "output.gif",
+          ]);
+          await ffmpeg.exec([
+            "-i", "input",
+            "-vf", `fps=${fps},scale=${scale}:-1:flags=lanczos`,
+            "-vcodec", "libwebp", "-lossless", "0", "-q:v", "70", "-loop", "0", "-an",
+            "-y", "output.webp",
+          ]);
+
+          const gifData = (await ffmpeg.readFile("output.gif")) as Uint8Array;
+          const webpData = (await ffmpeg.readFile("output.webp")) as Uint8Array;
+          const gifURL = URL.createObjectURL(new Blob([new Uint8Array(gifData)], { type: "image/gif" }));
+          const webpURL = URL.createObjectURL(new Blob([new Uint8Array(webpData)], { type: "image/webp" }));
+
+          setVideoBatchItems(prev => prev.map((it, i) =>
+            i === idx ? { ...it, status: "done", gifURL, gifSize: gifData.length, webpURL, webpSize: webpData.length } : it
+          ));
+
+          await ffmpeg.deleteFile("input");
+          await ffmpeg.deleteFile("palette.png");
+          await ffmpeg.deleteFile("output.gif");
+          await ffmpeg.deleteFile("output.webp");
+        } catch (err) {
+          setVideoBatchItems(prev => prev.map((it, i) =>
+            i === idx ? { ...it, status: "error", error: err instanceof Error ? err.message : "Failed" } : it
+          ));
+        }
+      }
+
+      setStatus("done");
+      setStep("");
+      setProgress(0);
+    } catch (err) {
+      console.error("Batch video conversion failed:", err);
+      setError(err instanceof Error ? err.message : "Conversion failed.");
+      setStatus("error");
+    }
+  };
+
+  const resetVideoBatch = () => {
+    videoBatchItems.forEach(item => {
+      if (item.gifURL) URL.revokeObjectURL(item.gifURL);
+      if (item.webpURL) URL.revokeObjectURL(item.webpURL);
+    });
+    setVideoBatchItems([]);
+    setVideoBatchMode(false);
+    setStatus("idle");
+    setProgress(0);
+    setStep("");
+    setError("");
   };
 
   // ─── Compress GIF handlers ───
@@ -748,14 +905,67 @@ export default function Home() {
     [imgFileURL, imgOutputURL],
   );
 
+  const handleImageFiles = useCallback(
+    (files: File[]) => {
+      if (files.length === 1) {
+        setImgBatchMode(false);
+        handleImageFile(files[0]);
+        return;
+      }
+      const valid: ImgBatchItem[] = [];
+      for (const file of files) {
+        const fmt = detectImageFormat(file.type);
+        if (fmt) {
+          valid.push({
+            id: `${file.name}-${file.size}-${valid.length}`,
+            file,
+            inputURL: URL.createObjectURL(file),
+            inputSize: file.size,
+            status: "pending",
+          });
+        }
+      }
+      if (valid.length === 0) {
+        setImgError("No supported image files. Please use PNG, JPEG, WebP, BMP, TIFF, or GIF.");
+        setImgStatus("error");
+        return;
+      }
+      setImgBatchItems(valid);
+      setImgBatchMode(true);
+      setImgStatus("ready");
+      setImgError("");
+    },
+    [handleImageFile],
+  );
+
+  const addMoreImgFiles = useCallback((files: File[]) => {
+    const newItems: ImgBatchItem[] = [];
+    for (const file of files) {
+      const fmt = detectImageFormat(file.type);
+      if (fmt) {
+        newItems.push({
+          id: `${file.name}-${file.size}-${newItems.length}`,
+          file,
+          inputURL: URL.createObjectURL(file),
+          inputSize: file.size,
+          status: "pending",
+        });
+      }
+    }
+    if (newItems.length > 0) {
+      setImgBatchItems(prev => [...prev, ...newItems]);
+      setImgStatus("ready");
+    }
+  }, []);
+
   const handleImageDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setImgDragOver(false);
-      const file = e.dataTransfer.files[0];
-      if (file) handleImageFile(file);
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length > 0) handleImageFiles(files);
     },
-    [handleImageFile],
+    [handleImageFiles],
   );
 
   const convertImage = async () => {
@@ -828,6 +1038,88 @@ export default function Home() {
     setImgStep("");
     setImgError("");
     setImgStatus("idle");
+  };
+
+  const convertBatchImages = async () => {
+    const snapshot = imgBatchItems.slice();
+    const pendingIndices = snapshot.map((it, i) => (it.status === "pending" ? i : -1)).filter(i => i >= 0);
+    if (pendingIndices.length === 0) return;
+
+    try {
+      if (!ffmpegRef.current) {
+        setImgStatus("loading");
+        setImgStep("Downloading converter engine (~30 MB, one-time)…");
+        progressSetterRef.current = setImgProgress;
+        await ensureFFmpeg();
+      }
+
+      setImgStatus("converting");
+
+      for (const idx of pendingIndices) {
+        const item = snapshot[idx];
+        setImgBatchItems(prev => prev.map((it, i) => i === idx ? { ...it, status: "converting" } : it));
+
+        try {
+          const ffmpeg = ffmpegRef.current!;
+          progressSetterRef.current = setImgProgress;
+          setImgProgress(0);
+          setImgStep(`Converting ${item.file.name} (${pendingIndices.indexOf(idx) + 1}/${pendingIndices.length})…`);
+
+          const inputExt = mimeToExt(item.file.type);
+          const inputName = `input.${inputExt}`;
+          const fmt = IMAGE_FORMATS[imgOutputFormat];
+          const outputName = `output.${fmt.ext}`;
+
+          await ffmpeg.writeFile(inputName, await fetchFile(item.file));
+
+          const args: string[] = ["-i", inputName];
+          if (imgOutputFormat === "jpeg") {
+            const qv = Math.round(2 + ((100 - imgQuality) / 100) * 29);
+            args.push("-q:v", String(qv));
+          } else if (imgOutputFormat === "webp") {
+            args.push("-lossless", "0", "-q:v", String(imgQuality));
+          }
+          args.push("-y", outputName);
+
+          await ffmpeg.exec(args);
+
+          const data = (await ffmpeg.readFile(outputName)) as Uint8Array;
+          const outputURL = URL.createObjectURL(new Blob([new Uint8Array(data)], { type: fmt.mime }));
+
+          setImgBatchItems(prev => prev.map((it, i) =>
+            i === idx ? { ...it, status: "done", outputURL, outputSize: data.length } : it
+          ));
+
+          await ffmpeg.deleteFile(inputName);
+          await ffmpeg.deleteFile(outputName);
+        } catch (err) {
+          setImgBatchItems(prev => prev.map((it, i) =>
+            i === idx ? { ...it, status: "error", error: err instanceof Error ? err.message : "Failed" } : it
+          ));
+        }
+      }
+
+      setImgStatus("done");
+      setImgStep("");
+      setImgProgress(0);
+    } catch (err) {
+      console.error("Batch image conversion failed:", err);
+      setImgError(err instanceof Error ? err.message : "Conversion failed.");
+      setImgStatus("error");
+    }
+  };
+
+  const resetImgBatch = () => {
+    imgBatchItems.forEach(item => {
+      URL.revokeObjectURL(item.inputURL);
+      if (item.outputURL) URL.revokeObjectURL(item.outputURL);
+    });
+    setImgBatchItems([]);
+    setImgBatchMode(false);
+    setImgStatus("idle");
+    setImgProgress(0);
+    setImgStep("");
+    setImgError("");
   };
 
   const isLocked = status === "loading" || status === "converting";
@@ -914,7 +1206,7 @@ export default function Home() {
           {activeTab === "convert" && (
             <>
               {/* ── Upload Zone ── */}
-              {status === "idle" && (
+              {status === "idle" && !videoBatchMode && (
                 <div
                   className={`m-6 border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all duration-200 ${
                     dragOver
@@ -933,10 +1225,12 @@ export default function Home() {
                     ref={fileInputRef}
                     type="file"
                     accept="video/*"
+                    multiple
                     className="hidden"
                     onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) handleFile(file);
+                      const files = Array.from(e.target.files || []);
+                      if (files.length > 0) handleVideoFiles(files);
+                      e.target.value = "";
                     }}
                   />
                   <svg
@@ -953,16 +1247,16 @@ export default function Home() {
                     />
                   </svg>
                   <p className="mt-4 text-lg font-medium text-slate-700">
-                    Drop your video here
+                    Drop your video(s) here
                   </p>
                   <p className="mt-1 text-sm text-slate-400">
-                    or click to browse &middot; MP4, WebM, MOV, AVI
+                    or click to browse &middot; MP4, WebM, MOV, AVI &middot; multiple files supported
                   </p>
                 </div>
               )}
 
               {/* ── Video Preview + Controls ── */}
-              {(status === "ready" || isLocked) && (
+              {(status === "ready" || isLocked) && !videoBatchMode && (
                 <div className="p-6">
                   <div className="relative rounded-xl overflow-hidden bg-black">
                     <video
@@ -1303,7 +1597,7 @@ export default function Home() {
               )}
 
               {/* ── Result ── */}
-              {status === "done" && gifURL && (
+              {status === "done" && gifURL && !videoBatchMode && (
                 <div className="p-6">
                   <div className="rounded-xl overflow-hidden bg-slate-50 border border-slate-100">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1368,7 +1662,7 @@ export default function Home() {
               )}
 
               {/* ── Error ── */}
-              {status === "error" && (
+              {status === "error" && !videoBatchMode && (
                 <div className="p-6">
                   <div className="rounded-xl bg-red-50 border border-red-100 p-4">
                     <p className="text-red-600 text-sm">{error}</p>
@@ -1379,6 +1673,164 @@ export default function Home() {
                   >
                     Try Again
                   </button>
+                </div>
+              )}
+
+              {/* ── Video Batch Mode ── */}
+              {videoBatchMode && (
+                <div className="p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="text-sm font-semibold text-slate-700">
+                      {videoBatchItems.length} video{videoBatchItems.length !== 1 ? "s" : ""}
+                    </span>
+                    <div className="flex items-center gap-3">
+                      {!isLocked && (
+                        <>
+                          <input
+                            ref={videoBatchFileInputRef}
+                            type="file"
+                            accept="video/*"
+                            multiple
+                            className="hidden"
+                            onChange={(e) => {
+                              const files = Array.from(e.target.files || []);
+                              if (files.length > 0) addMoreVideoFiles(files);
+                              e.target.value = "";
+                            }}
+                          />
+                          <button
+                            onClick={() => videoBatchFileInputRef.current?.click()}
+                            className="text-xs text-violet-600 hover:text-violet-800 font-medium transition-colors"
+                          >
+                            Add more
+                          </button>
+                        </>
+                      )}
+                      <button
+                        onClick={resetVideoBatch}
+                        disabled={isLocked}
+                        className="text-xs text-slate-400 hover:text-slate-600 transition-colors disabled:opacity-50"
+                      >
+                        Clear all
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                    {videoBatchItems.map((item, idx) => (
+                      <div key={item.id} className="flex items-center gap-3 rounded-lg bg-slate-50 border border-slate-100 p-2.5">
+                        <div className="h-9 w-9 flex-shrink-0 rounded bg-slate-200 flex items-center justify-center">
+                          <svg className="h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25h-9A2.25 2.25 0 0 0 2.25 7.5v9a2.25 2.25 0 0 0 2.25 2.25Z" />
+                          </svg>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-slate-700 truncate">{item.file.name}</p>
+                          <p className="text-xs text-slate-400">{formatSize(item.file.size)}</p>
+                        </div>
+                        {item.status === "pending" && <span className="text-xs text-slate-400 flex-shrink-0">Pending</span>}
+                        {item.status === "converting" && <span className="text-xs text-violet-600 flex-shrink-0 animate-pulse">Converting…</span>}
+                        {item.status === "done" && item.gifURL && (
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <a
+                              href={item.gifURL}
+                              download={item.file.name.replace(/\.[^.]+$/, ".gif")}
+                              className="rounded-lg bg-violet-600 text-white text-xs px-2 py-1 hover:bg-violet-700 transition-colors"
+                            >
+                              ↓ GIF
+                            </a>
+                            {item.webpURL && (
+                              <a
+                                href={item.webpURL}
+                                download={item.file.name.replace(/\.[^.]+$/, ".webp")}
+                                className="rounded-lg bg-indigo-600 text-white text-xs px-2 py-1 hover:bg-indigo-700 transition-colors"
+                              >
+                                ↓ WebP
+                              </a>
+                            )}
+                          </div>
+                        )}
+                        {item.status === "error" && <span className="text-xs text-red-500 flex-shrink-0">Failed</span>}
+                        {item.status === "pending" && !isLocked && (
+                          <button
+                            onClick={() => setVideoBatchItems(prev => prev.filter((_, i) => i !== idx))}
+                            className="text-slate-300 hover:text-slate-500 transition-colors flex-shrink-0 ml-1"
+                          >
+                            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-5">
+                    <label className="text-sm font-medium text-slate-700">Quality</label>
+                    <div className="mt-2 grid grid-cols-4 gap-3">
+                      {(Object.entries(QUALITY_PRESETS) as [Exclude<Quality, "custom">, Preset][]).map(([key, preset]) => (
+                        <button
+                          key={key}
+                          onClick={() => applyPreset(key)}
+                          disabled={isLocked}
+                          className={`rounded-xl border-2 p-3 text-center transition-all duration-150 ${
+                            quality === key ? "border-violet-500 bg-violet-50" : "border-slate-200 hover:border-slate-300 bg-white"
+                          } disabled:opacity-50 disabled:cursor-not-allowed`}
+                        >
+                          <span className={`block text-sm font-semibold ${quality === key ? "text-violet-700" : "text-slate-700"}`}>
+                            {preset.label}
+                          </span>
+                          <span className="block text-xs text-slate-400 mt-0.5">{preset.desc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {status !== "done" && (
+                    <button
+                      onClick={convertBatchVideos}
+                      disabled={isLocked || videoBatchItems.every(i => i.status === "done")}
+                      className="mt-6 w-full py-3 px-6 rounded-xl font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-lg shadow-violet-200"
+                    >
+                      {isLocked
+                        ? `Converting… (${videoBatchItems.filter(i => i.status === "done").length}/${videoBatchItems.length})`
+                        : `Convert All (${videoBatchItems.filter(i => i.status !== "done").length} remaining)`}
+                    </button>
+                  )}
+
+                  {isLocked && (
+                    <div className="mt-4">
+                      <div className="flex justify-between text-sm mb-1.5">
+                        <span className="text-slate-600">{step}</span>
+                        {status === "converting" && <span className="text-violet-600 font-mono">{progress}%</span>}
+                      </div>
+                      <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                        {status === "loading" ? (
+                          <div className="h-full bg-gradient-to-r from-violet-500 to-indigo-500 rounded-full animate-pulse w-full" />
+                        ) : (
+                          <div
+                            className="h-full bg-gradient-to-r from-violet-500 to-indigo-500 rounded-full transition-all duration-300"
+                            style={{ width: `${progress}%` }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {status === "done" && (
+                    <button
+                      onClick={resetVideoBatch}
+                      className="mt-6 w-full py-3 px-6 rounded-xl font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
+                    >
+                      Convert More Videos
+                    </button>
+                  )}
+
+                  {error && (
+                    <div className="mt-4 rounded-xl bg-red-50 border border-red-100 p-4">
+                      <p className="text-red-600 text-sm">{error}</p>
+                    </div>
+                  )}
                 </div>
               )}
             </>
@@ -1730,7 +2182,7 @@ export default function Home() {
           {activeTab === "image" && (
             <>
               {/* ── Upload Zone ── */}
-              {imgStatus === "idle" && (
+              {imgStatus === "idle" && !imgBatchMode && (
                 <div
                   className={`m-6 border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all duration-200 ${
                     imgDragOver
@@ -1749,10 +2201,12 @@ export default function Home() {
                     ref={imgFileInputRef}
                     type="file"
                     accept={ACCEPTED_IMAGE_TYPES}
+                    multiple
                     className="hidden"
                     onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) handleImageFile(file);
+                      const files = Array.from(e.target.files || []);
+                      if (files.length > 0) handleImageFiles(files);
+                      e.target.value = "";
                     }}
                   />
                   <svg
@@ -1769,16 +2223,16 @@ export default function Home() {
                     />
                   </svg>
                   <p className="mt-4 text-lg font-medium text-slate-700">
-                    Drop your image here
+                    Drop your image(s) here
                   </p>
                   <p className="mt-1 text-sm text-slate-400">
-                    or click to browse &middot; PNG, JPEG, WebP, BMP, TIFF, GIF
+                    or click to browse &middot; PNG, JPEG, WebP, BMP, TIFF, GIF &middot; multiple files supported
                   </p>
                 </div>
               )}
 
               {/* ── Image Preview + Format Picker ── */}
-              {(imgStatus === "ready" || isImageLocked) && (
+              {(imgStatus === "ready" || isImageLocked) && !imgBatchMode && (
                 <div className="p-6">
                   <div className="rounded-xl overflow-hidden bg-slate-50 border border-slate-100">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1896,7 +2350,7 @@ export default function Home() {
               )}
 
               {/* ── Result ── */}
-              {imgStatus === "done" && imgOutputURL && (
+              {imgStatus === "done" && imgOutputURL && !imgBatchMode && (
                 <div className="p-6">
                   <div className="rounded-xl overflow-hidden bg-slate-50 border border-slate-100">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1949,7 +2403,7 @@ export default function Home() {
               )}
 
               {/* ── Error ── */}
-              {imgStatus === "error" && (
+              {imgStatus === "error" && !imgBatchMode && (
                 <div className="p-6">
                   <div className="rounded-xl bg-red-50 border border-red-100 p-4">
                     <p className="text-red-600 text-sm">{imgError}</p>
@@ -1960,6 +2414,178 @@ export default function Home() {
                   >
                     Try Again
                   </button>
+                </div>
+              )}
+
+              {/* ── Image Batch Mode ── */}
+              {imgBatchMode && (
+                <div className="p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="text-sm font-semibold text-slate-700">
+                      {imgBatchItems.length} image{imgBatchItems.length !== 1 ? "s" : ""}
+                    </span>
+                    <div className="flex items-center gap-3">
+                      {!isImageLocked && (
+                        <>
+                          <input
+                            ref={imgBatchFileInputRef}
+                            type="file"
+                            accept={ACCEPTED_IMAGE_TYPES}
+                            multiple
+                            className="hidden"
+                            onChange={(e) => {
+                              const files = Array.from(e.target.files || []);
+                              if (files.length > 0) addMoreImgFiles(files);
+                              e.target.value = "";
+                            }}
+                          />
+                          <button
+                            onClick={() => imgBatchFileInputRef.current?.click()}
+                            className="text-xs text-violet-600 hover:text-violet-800 font-medium transition-colors"
+                          >
+                            Add more
+                          </button>
+                        </>
+                      )}
+                      <button
+                        onClick={resetImgBatch}
+                        disabled={isImageLocked}
+                        className="text-xs text-slate-400 hover:text-slate-600 transition-colors disabled:opacity-50"
+                      >
+                        Clear all
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                    {imgBatchItems.map((item, idx) => (
+                      <div key={item.id} className="flex items-center gap-3 rounded-lg bg-slate-50 border border-slate-100 p-2.5">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={item.inputURL} alt="" className="h-9 w-9 object-cover rounded flex-shrink-0 bg-slate-200" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-slate-700 truncate">{item.file.name}</p>
+                          <p className="text-xs text-slate-400">{formatSize(item.inputSize)}</p>
+                        </div>
+                        {item.status === "pending" && <span className="text-xs text-slate-400 flex-shrink-0">Pending</span>}
+                        {item.status === "converting" && <span className="text-xs text-violet-600 flex-shrink-0 animate-pulse">Converting…</span>}
+                        {item.status === "done" && item.outputURL && (
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <span className="text-xs text-emerald-600 font-mono">{formatSize(item.outputSize!)}</span>
+                            <a
+                              href={item.outputURL}
+                              download={item.file.name.replace(/\.[^.]+$/, `.${IMAGE_FORMATS[imgOutputFormat].ext}`)}
+                              className="rounded-lg bg-violet-600 text-white text-xs px-2 py-1 hover:bg-violet-700 transition-colors"
+                            >
+                              ↓ {IMAGE_FORMATS[imgOutputFormat].label}
+                            </a>
+                          </div>
+                        )}
+                        {item.status === "error" && <span className="text-xs text-red-500 flex-shrink-0">Failed</span>}
+                        {item.status === "pending" && !isImageLocked && (
+                          <button
+                            onClick={() => {
+                              URL.revokeObjectURL(item.inputURL);
+                              setImgBatchItems(prev => prev.filter((_, i) => i !== idx));
+                            }}
+                            className="text-slate-300 hover:text-slate-500 transition-colors flex-shrink-0 ml-1"
+                          >
+                            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-5">
+                    <label className="text-sm font-medium text-slate-700">Output Format</label>
+                    <div className="mt-2 grid grid-cols-3 gap-3 sm:grid-cols-6">
+                      {(Object.entries(IMAGE_FORMATS) as [ImageFormat, ImageFormatOption][]).map(([key, fmt]) => (
+                        <button
+                          key={key}
+                          onClick={() => setImgOutputFormat(key)}
+                          disabled={isImageLocked}
+                          className={`rounded-xl border-2 p-3 text-center transition-all duration-150 ${
+                            imgOutputFormat === key ? "border-violet-500 bg-violet-50" : "border-slate-200 hover:border-slate-300 bg-white"
+                          } disabled:opacity-50 disabled:cursor-not-allowed`}
+                        >
+                          <span className={`block text-sm font-semibold ${imgOutputFormat === key ? "text-violet-700" : "text-slate-700"}`}>
+                            {fmt.label}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {IMAGE_FORMATS[imgOutputFormat].hasQuality && (
+                    <div className="mt-5">
+                      <label className="text-sm font-medium text-slate-700">Quality</label>
+                      <div className="mt-2 grid grid-cols-3 gap-3">
+                        {(Object.entries(IMG_QUALITY_PRESETS) as [ImgQualityLevel, ImgQualityPreset][]).map(([key, preset]) => (
+                          <button
+                            key={key}
+                            onClick={() => { setImgQualityLevel(key); setImgQuality(preset.value); }}
+                            disabled={isImageLocked}
+                            className={`rounded-xl border-2 p-3 text-center transition-all duration-150 ${
+                              imgQualityLevel === key ? "border-violet-500 bg-violet-50" : "border-slate-200 hover:border-slate-300 bg-white"
+                            } disabled:opacity-50 disabled:cursor-not-allowed`}
+                          >
+                            <span className={`block text-sm font-semibold ${imgQualityLevel === key ? "text-violet-700" : "text-slate-700"}`}>
+                              {preset.label}
+                            </span>
+                            <span className="block text-xs text-slate-400 mt-0.5">{preset.desc}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {imgStatus !== "done" && (
+                    <button
+                      onClick={convertBatchImages}
+                      disabled={isImageLocked || imgBatchItems.every(i => i.status === "done")}
+                      className="mt-6 w-full py-3 px-6 rounded-xl font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-lg shadow-violet-200"
+                    >
+                      {isImageLocked
+                        ? `Converting… (${imgBatchItems.filter(i => i.status === "done").length}/${imgBatchItems.length})`
+                        : `Convert All (${imgBatchItems.filter(i => i.status !== "done").length} remaining)`}
+                    </button>
+                  )}
+
+                  {isImageLocked && (
+                    <div className="mt-4">
+                      <div className="flex justify-between text-sm mb-1.5">
+                        <span className="text-slate-600">{imgStep}</span>
+                        {imgStatus === "converting" && <span className="text-violet-600 font-mono">{imgProgress}%</span>}
+                      </div>
+                      <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                        {imgStatus === "loading" ? (
+                          <div className="h-full bg-gradient-to-r from-violet-500 to-indigo-500 rounded-full animate-pulse w-full" />
+                        ) : (
+                          <div
+                            className="h-full bg-gradient-to-r from-violet-500 to-indigo-500 rounded-full transition-all duration-300"
+                            style={{ width: `${imgProgress}%` }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {imgStatus === "done" && (
+                    <button
+                      onClick={resetImgBatch}
+                      className="mt-6 w-full py-3 px-6 rounded-xl font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
+                    >
+                      Convert More Files
+                    </button>
+                  )}
+
+                  {imgError && (
+                    <div className="mt-4 rounded-xl bg-red-50 border border-red-100 p-4">
+                      <p className="text-red-600 text-sm">{imgError}</p>
+                    </div>
+                  )}
                 </div>
               )}
             </>
