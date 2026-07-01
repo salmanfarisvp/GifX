@@ -353,6 +353,29 @@ export default function Home() {
     [videoURL, gifURL, webpURL],
   );
 
+  // ─── Persist & restore image convert preferences ───
+  useEffect(() => {
+    try {
+      const savedFormat = localStorage.getItem("gifx_imgOutputFormat");
+      if (savedFormat && savedFormat in IMAGE_FORMATS) {
+        setImgOutputFormat(savedFormat as ImageFormat);
+      }
+      const savedLevel = localStorage.getItem("gifx_imgQualityLevel");
+      if (savedLevel && savedLevel in IMG_QUALITY_PRESETS) {
+        const level = savedLevel as ImgQualityLevel;
+        setImgQualityLevel(level);
+        setImgQuality(IMG_QUALITY_PRESETS[level].value);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("gifx_imgOutputFormat", imgOutputFormat);
+      localStorage.setItem("gifx_imgQualityLevel", imgQualityLevel);
+    } catch {}
+  }, [imgOutputFormat, imgQualityLevel]);
+
   useEffect(() => {
     const el = videoElRef.current;
     if (!el || !videoURL) return;
