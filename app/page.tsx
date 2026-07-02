@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile, toBlobURL } from "@ffmpeg/util";
+import JSZip from "jszip";
 
 interface VisitorStats {
   total: number;
@@ -179,6 +180,28 @@ function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+async function downloadURLsAsZip(
+  files: { url: string; name: string }[],
+  zipName: string
+) {
+  const zip = new JSZip();
+  await Promise.all(
+    files.map(async ({ url, name }) => {
+      const blob = await fetch(url).then((r) => r.blob());
+      zip.file(name, blob);
+    })
+  );
+  const zipBlob = await zip.generateAsync({ type: "blob" });
+  const zipURL = URL.createObjectURL(zipBlob);
+  const a = document.createElement("a");
+  a.href = zipURL;
+  a.download = zipName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(zipURL);
 }
 
 function formatDuration(sec: number) {
@@ -769,6 +792,18 @@ export default function Home() {
     setError("");
   };
 
+  const downloadVideoBatchZip = async () => {
+    const files = videoBatchItems.flatMap(item => {
+      const base = item.file.name.replace(/\.[^.]+$/, "");
+      const out: { url: string; name: string }[] = [];
+      if (item.gifURL) out.push({ url: item.gifURL, name: `${base}.gif` });
+      if (item.webpURL) out.push({ url: item.webpURL, name: `${base}.webp` });
+      return out;
+    });
+    if (files.length === 0) return;
+    await downloadURLsAsZip(files, "gifx-videos.zip");
+  };
+
   // ─── Compress GIF handlers ───
   const handleCompressFile = useCallback(
     (file: File) => {
@@ -1143,6 +1178,18 @@ export default function Home() {
     setImgProgress(0);
     setImgStep("");
     setImgError("");
+  };
+
+  const downloadImgBatchZip = async () => {
+    const ext = IMAGE_FORMATS[imgOutputFormat].ext;
+    const files = imgBatchItems
+      .filter(item => item.outputURL)
+      .map(item => ({
+        url: item.outputURL!,
+        name: `${item.file.name.replace(/\.[^.]+$/, "")}.${ext}`,
+      }));
+    if (files.length === 0) return;
+    await downloadURLsAsZip(files, "gifx-images.zip");
   };
 
   const isLocked = status === "loading" || status === "converting";
@@ -1841,12 +1888,20 @@ export default function Home() {
                   )}
 
                   {status === "done" && (
-                    <button
-                      onClick={resetVideoBatch}
-                      className="mt-6 w-full py-3 px-6 rounded-xl font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
-                    >
-                      Convert More Videos
-                    </button>
+                    <div className="mt-6 flex gap-3">
+                      <button
+                        onClick={downloadVideoBatchZip}
+                        className="flex-1 py-3 px-6 rounded-xl font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 transition-all duration-200 shadow-lg shadow-violet-200"
+                      >
+                        Download All as ZIP
+                      </button>
+                      <button
+                        onClick={resetVideoBatch}
+                        className="flex-1 py-3 px-6 rounded-xl font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
+                      >
+                        Convert More Videos
+                      </button>
+                    </div>
                   )}
 
                   {error && (
@@ -2596,12 +2651,20 @@ export default function Home() {
                   )}
 
                   {imgStatus === "done" && (
-                    <button
-                      onClick={resetImgBatch}
-                      className="mt-6 w-full py-3 px-6 rounded-xl font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
-                    >
-                      Convert More Files
-                    </button>
+                    <div className="mt-6 flex gap-3">
+                      <button
+                        onClick={downloadImgBatchZip}
+                        className="flex-1 py-3 px-6 rounded-xl font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 transition-all duration-200 shadow-lg shadow-violet-200"
+                      >
+                        Download All as ZIP
+                      </button>
+                      <button
+                        onClick={resetImgBatch}
+                        className="flex-1 py-3 px-6 rounded-xl font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
+                      >
+                        Convert More Files
+                      </button>
+                    </div>
                   )}
 
                   {imgError && (
